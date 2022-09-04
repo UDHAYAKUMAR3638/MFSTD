@@ -1,0 +1,479 @@
+// Working Code: 
+//      -> [ Switch 1 ] for OLED with all sensors
+//      -> [ Switch 2 ] for Uploading values to cloud.
+
+
+//====================================================================
+// Connections for OLED and Soil moisture sensor:
+// oled to esp32 : VCC to VIN, Gnd to Gnd, SCl to 22, SDA to 21.
+// soil moisture sensor : VCC to VIN, Gnd to Gnd, AOUT to 33.
+//=====================================================================
+//Connections for pH sensor.
+// Ph sensor to esp32 : V+ to VIN, Gnd to Gnd, PO to 35.
+//=====================================================================
+//Connections for NPK sensor.
+//NPK sensor to esp32 :
+//RO : 18
+//DI : 19
+//DE, RE : 5(short)
+//=====================================================================
+
+//=====================================================================
+//--------------------------PIN-OUTS ----------------------------------
+//OLED      
+//                  SCL :                 22
+//                  SDA :                 21
+//Soil Moisture Sensor  :                 33
+//pHSensor              :                 35
+//NPK                   
+//                   RO :                 18
+//                   DI :                 19
+//               DE, RE :                  5(short)
+//Display Switch        :                 23
+//Cloud Switch          :                 ?
+//====================================================================
+
+
+//=====================================================================
+//-------------------Variables to be printed---------------------------
+//Soil Moisture Sensor  :                 soilMoisture
+//pHSensor              :                 ph_main
+//N                     :                 val1
+//P                     :                 val2
+//K                     :                 val3
+//====================================================================
+
+//=====================================================================
+//-------------------  Libraries for OLED   ---------------------------
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+//=====================================================================
+//-------------------Libraries for Thingpeak---------------------------
+#include <WiFi.h>
+#include "secrets.h"
+#include "ThingSpeak.h"
+
+//===================================================================================
+//-------------------              INITIALIZATIONS        ---------------------------
+//===================================================================================
+//===================================================================================
+// Thingspeak initialization.
+char ssid[] = SECRET_SSID;
+char pass[] = SECRET_PASS;
+int keyIndex = 0;
+WiFiClient  client;
+
+unsigned long myChannelNumber = SECRET_CH_ID;
+const char * myWriteAPIKey = SECRET_WRITE_APIKEY;
+String myStatus = "";
+
+
+//===================================================================================
+// Capacitive soil moistire sensor initialization.
+const int AirValue = 3620;
+const int WaterValue = 1680;
+int soilMoisture = 0; // Main function value
+int soilmoistureFinal = 0; //soilMoistureVal function Return Value
+int soilMoistureValue = 0; //soilMoistureVal function Sensor read Value
+int soilmoisturepercent = 0; //soilMoistureVal function Percentage calculation Value
+//===================================================================================
+// pH sensor initialization.
+float ph_main;                                            //ph val in Main function
+float calibration_value =  21.34 - 0.7; //20.24 - 0.7     //phcaliberation val in pH function
+int phval = 0;                                            //ph val in pH function
+unsigned long int avgval;                                 //ph val in pH function
+int buffer_arr[10], temp;                                 //ph val in pH function
+float ph_act;                                             //ph val in pH function
+
+//===================================================================================
+#define RE 5                                            // NPK sensor initialization.
+#define DE 32
+
+const byte nitro[] = {0x01, 0x03, 0x00, 0x1e, 0x00, 0x01, 0xe4, 0x0c};
+const byte phos[] = {0x01, 0x03, 0x00, 0x1f, 0x00, 0x01, 0xb5, 0xcc};
+const byte pota[] = {0x01, 0x03, 0x00, 0x20, 0x00, 0x01, 0x85, 0xc0};
+
+byte values[11];
+SoftwareSerial mod(18, 19); // (RO,DI)
+
+//===================================================================================
+
+//===================================================================================
+// OLED Display initialization.
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+//===================================================================================
+// OLED Switch initialization.
+
+#define BUTTON_PIN 23
+int switch_state = 0;
+//===================================================================================
+// CLOUD    Switch initialization.
+#define CLOUD_SWITCH 4
+int Cswitch_state = 0;
+
+
+void setup()
+{
+  Serial.begin(115200);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(CLOUD_SWITCH, INPUT_PULLUP);
+  //===================================================================================
+  while (!Serial)         // for ThingSpeak
+  {
+    ;
+  }
+  WiFi.mode(WIFI_STA);
+  ThingSpeak.begin(client);  
+
+  //===================================================================================
+  mod.begin(4800);       // for NPK sensor
+  pinMode(RE, OUTPUT);
+  pinMode(DE, OUTPUT);
+
+  //======================================
+  // OLED Display
+  //======================================
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); //initialize with the I2C addr 0x3C (128x64)
+  display.clearDisplay();
+
+
+}
+
+void loop()
+{
+  //====================================================================================================
+  // Connect or reconnect to WiFi
+  //==================================================================================================== 
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.println(SECRET_SSID);
+    display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.print("Connecting");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 20);
+    display.print("to: ");
+
+    display.setTextSize(1); 
+    display.setCursor(31, 24);       
+    display.print(SECRET_SSID);
+      
+    display.display();
+   
+    display.clearDisplay();
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      WiFi.begin(ssid, pass); Serial.print(".");
+      delay(5000);
+    }
+    Serial.println("\nConnected.");
+    display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.print("Connected");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 20);
+    display.print("Successfully");
+
+    display.display();
+    
+    display.clearDisplay();
+  }
+
+  
+  //====================================================================================================
+  //Soil moisture sensor part (33)
+  //====================================================================================================
+  soilMoisture = soilMoistureVal();
+
+
+  delay(250);
+  //===============================================================================================
+  // pH sensor part (35)
+  //===============================================================================================
+
+  ph_main = phVal();
+
+
+  delay(250);
+  //===============================================================================================
+  // NPK sensor part
+  //===============================================================================================
+
+  float val;
+  byte val1, val2, val3;
+  val1 = nitrogen();
+  delay(250);
+  val2 = phosphorous();
+  delay(250);
+  val3 = potassium();
+  delay(250);
+
+  
+  //===============================================================================================
+  //Switch Case Part
+  //===============================================================================================
+
+  switch_state = digitalRead(BUTTON_PIN);
+  if (switch_state == HIGH)
+  {
+
+    Serial.print("Nitrogen: ");
+    Serial.print(val1);
+    Serial.println(" mg/kg");
+    Serial.print("Phosphorous: ");
+    Serial.print(val2);
+    Serial.println(" mg/kg");
+    Serial.print("Potassium: ");
+    Serial.print(val3);
+   
+   display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(16, 4);
+    display.print("N:");display.print(val1);
+    display.setTextSize(1); 
+    display.setCursor(80, 5); 
+    display.println("mg/kg");
+
+    display.setTextSize(2);        
+    display.setCursor(16, 24);
+    display.print("P:");display.print(val2);
+    display.setTextSize(1); 
+    display.setCursor(80, 25); 
+    display.println("mg/kg");
+
+    display.setTextSize(2);        
+    display.setCursor(16, 44);
+    display.print("K:");display.print(val3);
+    display.setTextSize(1); 
+    display.setCursor(80, 45); 
+    display.println("mg/kg");
+
+    display.display();
+    display.clearDisplay();;
+
+  }
+  else
+  {
+    Serial.print("Soil Moisture Value (m):");
+    Serial.print(soilMoisture); Serial.println("%");
+    Serial.println(" mg/kg");
+    Serial.print("pH Value: ");
+    Serial.println(ph_main);.
+
+    display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(27, 10);
+    display.print("SM:");display.print(soilMoisture);
+    display.setCursor(92, 10); 
+    display.println("%");
+    
+    display.setTextSize(2);
+    display.setCursor(27, 33);
+    display.print("pH:");display.print(ph_main);
+ 
+    display.display();
+    display.clearDisplay();
+
+
+  }
+  //====================================================================================================
+  //set the fields with the values
+  ThingSpeak.setField(1, val1);
+  ThingSpeak.setField(2, val2);
+  ThingSpeak.setField(3, val3);
+  ThingSpeak.setField(4, ph_main);
+  ThingSpeak.setField(5, soilMoisture);
+
+  //====================================================================================================
+
+  //====================================================================================================
+  //Thingspeak
+  ThingSpeak.setStatus(myStatus);
+  //====================================================================================================
+  //Cloud Switch
+  Cswitch_state = digitalRead(CLOUD_SWITCH);
+  if (Cswitch_state == HIGH)
+  {
+    Serial.println("HIGH");
+    
+  }
+  else
+  {
+    Serial.println("LOW"); 
+    upload();   
+  }
+  
+  
+  //====================================================================================================
+}
+//===============================================================================================
+//Functions
+//===============================================================================================
+
+
+
+
+
+byte nitrogen()                   //Nitrogen function definition
+{
+  digitalWrite(RE, HIGH);
+  delay(10);
+  if (mod.write(nitro, sizeof(nitro)) == 8)
+  {
+    digitalWrite(RE, LOW);
+    for (byte i = 0; i < 7; i++)
+    {
+      values[i] = mod.read();
+      //Serial.print(values[i],HEX);
+    }
+    Serial.println();
+  }
+  return values[4];
+}
+
+byte phosphorous()              //phosphorous function definition
+{
+  digitalWrite(RE, HIGH);
+  delay(10);
+  if (mod.write(phos, sizeof(phos)) == 8)
+  {
+    digitalWrite(RE, LOW);
+    for (byte i = 0; i < 7; i++)
+    {
+      values[i] = mod.read();
+      //Serial.print(values[i],HEX);
+    }
+    Serial.println();
+  }
+  return values[4];
+}
+
+byte potassium()                 //potassium function definition
+{
+  digitalWrite(RE, HIGH);
+  delay(10);
+  if (mod.write(pota, sizeof(pota)) == 8)
+  {
+    digitalWrite(RE, LOW);
+    for (byte i = 0; i < 7; i++)
+    {
+      values[i] = mod.read();
+      //Serial.print(values[i],HEX);
+    }
+    Serial.println();
+  }
+  return values[4];
+}
+int soilMoistureVal()
+{
+
+  soilMoistureValue = analogRead(32);
+  soilmoisturepercent = map(soilMoistureValue, AirValue, WaterValue, 0, 100);
+  if (soilmoisturepercent >= 100)
+  {
+
+    soilmoisturepercent = 100;
+    soilmoistureFinal = soilmoisturepercent;
+  }
+  else if (soilmoisturepercent <= 0)
+  {
+
+    soilmoisturepercent = 0;
+    soilmoistureFinal = soilmoisturepercent;
+  }
+  else if (soilmoisturepercent > 0 && soilmoisturepercent < 100)
+  {
+    soilmoistureFinal = soilmoisturepercent;
+  }
+  return soilmoistureFinal;
+}
+float phVal()
+{
+  for (int i = 0; i < 10; i++)
+  {
+    buffer_arr[i] = analogRead(33);
+    delay(30);
+  }
+  for (int i = 0; i < 9; i++)
+  {
+    for (int j = i + 1; j < 10; j++)
+    {
+      if (buffer_arr[i] > buffer_arr[j])
+      {
+        temp = buffer_arr[i];
+        buffer_arr[i] = buffer_arr[j];
+        buffer_arr[j] = temp;
+      }
+    }
+  }
+  avgval = 0;
+  for (int i = 2; i < 8; i++)
+    avgval += buffer_arr[i];
+  float volt = (float)avgval * 3.3 / 4096.0 / 6;
+  ph_act = -5.70 * volt + calibration_value;
+  ph_act = ph_act + 0.48;
+  return ph_act;
+
+
+}
+int upload()
+{
+  // write to the ThingSpeak channel
+
+  int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if (x == 200)
+  {
+    Serial.println("Channel update successful.");
+    display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.print("Channel");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 21);
+    display.print("update");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 43);
+    display.print("successful.");
+
+    display.display();
+    display.clearDisplay();
+  }
+  else
+  {
+    Serial.println("Problem updating channel. HTTP error code " + String(x));
+    display.setTextSize(2);        
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.print("Problem");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 21);
+    display.print("updating");
+
+    display.setTextSize(2);        
+    display.setCursor(0, 43);
+    display.print("channel...");
+
+    display.display();
+    display.clearDisplay();
+  }
+
+  delay(20000);
+  return 0;
+}
